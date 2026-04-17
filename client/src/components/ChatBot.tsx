@@ -13,50 +13,6 @@ interface ChatBotProps {
   onClose?: () => void;
 }
 
-// Base de conocimiento del chatbot
-const KNOWLEDGE_BASE: Record<string, string[]> = {
-  'que es dilauro': [
-    'DILAURO es una solución de presencia digital premium diseñada para marcas de élite. Ofrecemos una experiencia de activación rápida, UX sin fricción y diseño orientado a conversión de alto impacto.',
-  ],
-  'como funciona': [
-    'DILAURO funciona en 4 pasos simples: 1) Descubre nuestra propuesta en segundos, 2) Conecta con el valor de forma clara, 3) Decide tu siguiente paso sin dudas, 4) Avanza hacia la conversión real.',
-  ],
-  'cuales son los beneficios': [
-    'Nuestros principales beneficios son: Presencia Premium (identidad digital sobria y memorable), Claridad Instantánea (mensajes precisos), Experiencia Fluida (estructura intuitiva), y Conversión Optimizada (CTAs estratégicos).',
-  ],
-  'precio': [
-    'Para información sobre precios y planes personalizados, te invitamos a solicitar una demo o hablar directamente con nuestro equipo. Cada solución es adaptada a las necesidades específicas de tu marca.',
-  ],
-  'como solicitar acceso': [
-    'Puedes solicitar acceso de varias formas: 1) Haz clic en el botón "Solicitar acceso" en la parte superior, 2) Completa el formulario de contacto, 3) Envía un email a hola@dilauro.com, o 4) Conecta con nosotros en LinkedIn.',
-  ],
-  'tiempo de activacion': [
-    'DILAURO está diseñado para activación inmediata. Sin esperas, sin rodeos. La mayoría de nuestros clientes ven resultados en las primeras 48 horas de implementación.',
-  ],
-  'soporte': [
-    'Contamos con un equipo de soporte disponible para ayudarte. Puedes contactarnos a través de: Email: hola@dilauro.com, LinkedIn, o directamente a través de este chat. ¿Hay algo específico en lo que podamos ayudarte?',
-  ],
-  'contacto': [
-    'Puedes contactarnos de varias formas: Email: hola@dilauro.com, LinkedIn: linkedin.com/company/dilauro, o a través de este chat. Estamos aquí para ayudarte con cualquier pregunta.',
-  ],
-  'demo': [
-    'Nos encantaría mostrarte cómo DILAURO puede transformar tu presencia digital. Haz clic en "Solicitar una demo" en la página o envíanos un email a hola@dilauro.com para agendar una sesión personalizada.',
-  ],
-};
-
-// Respuestas por defecto
-const DEFAULT_RESPONSES = [
-  '¿Podrías reformular tu pregunta? Estoy aquí para ayudarte con información sobre DILAURO.',
-  'Interesante pregunta. Para obtener una respuesta más detallada, te recomiendo que hables directamente con nuestro equipo. ¿Hay algo más en lo que pueda ayudarte?',
-  'No tengo información específica sobre eso, pero nuestro equipo puede ayudarte. ¿Te gustaría que te conectemos con alguien del equipo?',
-];
-
-const GREETING_MESSAGES = [
-  '¡Hola! 👋 Bienvenido a DILAURO. Soy tu asistente de soporte. ¿Cómo puedo ayudarte hoy?',
-  '¡Hola! 👋 Estoy aquí para responder tus preguntas sobre DILAURO. ¿Qué te gustaría saber?',
-  '¡Bienvenido! 👋 Soy el chatbot de DILAURO. ¿En qué puedo asistirte?',
-];
-
 const QUICK_QUESTIONS = [
   '¿Qué es DILAURO?',
   '¿Cómo funciona?',
@@ -64,17 +20,42 @@ const QUICK_QUESTIONS = [
   'Solicitar demo',
 ];
 
+const SYSTEM_PROMPT = `Eres un asistente de soporte profesional para DILAURO, una solución de presencia digital premium diseñada para marcas de élite.
+
+INFORMACIÓN SOBRE DILAURO:
+- DILAURO es una plataforma de presencia digital premium con activación rápida, UX sin fricción y diseño orientado a conversión
+- Propuesta de valor: Elegancia que avanza contigo
+- Beneficios principales: Presencia Premium, Claridad Instantánea, Experiencia Fluida, Conversión Optimizada
+- Proceso de activación: 4 pasos - Descubre, Conecta, Decide, Avanza
+- Contacto: hola@dilauro.com
+- El objetivo es reducir el time-to-value y generar conversiones de alto impacto
+
+INSTRUCCIONES:
+1. Responde SOLO sobre DILAURO y temas relacionados con su propuesta de valor
+2. Si la pregunta no está relacionada con DILAURO, redirige amablemente al usuario hacia temas relevantes
+3. Sé profesional, conciso y orientado a la conversión
+4. Mantén un tono premium y sofisticado
+5. Ofrece información clara y directa
+6. Si el usuario muestra interés, sugiere solicitar una demo o contactar al equipo
+7. Responde en español, manteniendo la elegancia de la marca`;
+
 export default function ChatBot({ isOpen = false, onClose }: ChatBotProps) {
   const [open, setOpen] = useState(isOpen);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Inicializar con mensaje de bienvenida
   useEffect(() => {
     if (open && messages.length === 0) {
-      const greeting = GREETING_MESSAGES[Math.floor(Math.random() * GREETING_MESSAGES.length)];
+      const greetings = [
+        '¡Hola! 👋 Bienvenido a DILAURO. Soy tu asistente de soporte. ¿Cómo puedo ayudarte hoy?',
+        '¡Hola! 👋 Estoy aquí para responder tus preguntas sobre DILAURO. ¿Qué te gustaría saber?',
+        '¡Bienvenido! 👋 Soy el asistente de DILAURO. ¿En qué puedo asistirte?',
+      ];
+      const greeting = greetings[Math.floor(Math.random() * greetings.length)];
       setMessages([
         {
           id: '1',
@@ -91,17 +72,58 @@ export default function ChatBot({ isOpen = false, onClose }: ChatBotProps) {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Función para encontrar respuesta en la base de conocimiento
-  const findAnswer = (userMessage: string): string => {
-    const lowerMessage = userMessage.toLowerCase();
+  // Función para llamar a la API de Groq
+  const callGroqAPI = async (userMessage: string): Promise<string> => {
+    try {
+      // Construir el historial de conversación
+      const conversationHistory = messages
+        .filter(msg => msg.type !== undefined)
+        .map(msg => ({
+          role: msg.type === 'user' ? 'user' : 'assistant',
+          content: msg.text,
+        }));
 
-    for (const [key, responses] of Object.entries(KNOWLEDGE_BASE)) {
-      if (lowerMessage.includes(key)) {
-        return responses[Math.floor(Math.random() * responses.length)];
+      // Agregar el nuevo mensaje del usuario
+      conversationHistory.push({
+        role: 'user',
+        content: userMessage,
+      });
+
+      // Llamar a la API de Groq a través del endpoint de Manus
+      const response = await fetch('/api/groq', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messages: [
+            {
+              role: 'system',
+              content: SYSTEM_PROMPT,
+            },
+            ...conversationHistory,
+          ],
+          model: 'mixtral-8x7b-32768',
+          max_tokens: 1024,
+          temperature: 0.7,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Error de API: ${response.status}`);
       }
-    }
 
-    return DEFAULT_RESPONSES[Math.floor(Math.random() * DEFAULT_RESPONSES.length)];
+      const data = await response.json();
+      
+      if (data.choices && data.choices[0] && data.choices[0].message) {
+        return data.choices[0].message.content;
+      } else {
+        throw new Error('Respuesta inesperada de la API');
+      }
+    } catch (err) {
+      console.error('Error al llamar a Groq API:', err);
+      throw err;
+    }
   };
 
   // Manejar envío de mensaje
@@ -121,10 +143,12 @@ export default function ChatBot({ isOpen = false, onClose }: ChatBotProps) {
     setMessages((prev) => [...prev, userMessage]);
     setInput('');
     setIsLoading(true);
+    setError(null);
 
-    // Simular delay de respuesta (como si estuviera "escribiendo")
-    setTimeout(() => {
-      const botResponse = findAnswer(input);
+    try {
+      // Llamar a la API de Groq
+      const botResponse = await callGroqAPI(input);
+      
       const botMessage: Message = {
         id: (Date.now() + 1).toString(),
         type: 'bot',
@@ -132,8 +156,21 @@ export default function ChatBot({ isOpen = false, onClose }: ChatBotProps) {
         timestamp: new Date(),
       };
       setMessages((prev) => [...prev, botMessage]);
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Error desconocido';
+      setError(errorMessage);
+      
+      // Mostrar mensaje de error al usuario
+      const errorBotMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        type: 'bot',
+        text: `Lo siento, ocurrió un error al procesar tu pregunta. Por favor, intenta de nuevo o contacta a nuestro equipo en hola@dilauro.com`,
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, errorBotMessage]);
+    } finally {
       setIsLoading(false);
-    }, 800);
+    }
   };
 
   // Manejar preguntas rápidas
@@ -170,7 +207,7 @@ export default function ChatBot({ isOpen = false, onClose }: ChatBotProps) {
           <div className="bg-gradient-to-r from-blue-600 to-blue-700 text-white p-4 flex justify-between items-center">
             <div>
               <h3 className="font-bold text-lg">DILAURO Support</h3>
-              <p className="text-xs text-blue-100">Respuestas instantáneas 24/7</p>
+              <p className="text-xs text-blue-100">Respuestas inteligentes con IA 🤖</p>
             </div>
             <button
               onClick={handleClose}
@@ -213,6 +250,13 @@ export default function ChatBot({ isOpen = false, onClose }: ChatBotProps) {
                     <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
                   </div>
                 </div>
+              </div>
+            )}
+
+            {/* Mostrar error si existe */}
+            {error && (
+              <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded text-xs">
+                {error}
               </div>
             )}
 
