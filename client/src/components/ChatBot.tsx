@@ -83,6 +83,7 @@ export default function ChatBot({ isOpen = false, onClose }: ChatBotProps) {
   const [showLeadForm, setShowLeadForm] = useState(false);
   const [showSegmentSelection, setShowSegmentSelection] = useState(false);
   const [userSegment, setUserSegment] = useState<UserSegment>('general');
+  const [abTestVariant, setAbTestVariant] = useState<string>('control');
   const [leadData, setLeadData] = useState<LeadData>({
     email: '',
     name: '',
@@ -96,9 +97,22 @@ export default function ChatBot({ isOpen = false, onClose }: ChatBotProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const sessionIdRef = useRef<string>(Date.now().toString());
 
-  // Inicializar con selección de segmento
+  // Inicializar con selección de segmento y A/B test
   useEffect(() => {
     if (open && messages.length === 0) {
+      // Obtener variante de A/B test
+      fetch('/api/ab-test/variant', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: sessionIdRef.current,
+          segment: userSegment,
+        }),
+      })
+        .then(res => res.json())
+        .then(data => setAbTestVariant(data.variant))
+        .catch(err => console.error('Error getting A/B variant:', err));
+
       setShowSegmentSelection(true);
       const greetingMsg: Message = {
         id: '0',
@@ -323,6 +337,7 @@ export default function ChatBot({ isOpen = false, onClose }: ChatBotProps) {
         body: JSON.stringify({
           ...leadData,
           segment: userSegment,
+          variant: abTestVariant,
           sessionId: sessionIdRef.current,
           capturedAt: new Date().toISOString(),
         }),
@@ -348,13 +363,14 @@ export default function ChatBot({ isOpen = false, onClose }: ChatBotProps) {
         name: leadData.name,
         company: leadData.company,
         segment: userSegment,
+        variant: abTestVariant,
       });
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Error desconocido';
       setError(errorMsg);
       await logAnalytics('lead_capture_error', { error: errorMsg });
     }
-  };
+  }
 
   // Manejar escalada a humanos
   const handleEscalation = async () => {

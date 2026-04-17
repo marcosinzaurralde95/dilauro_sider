@@ -6,9 +6,16 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Almacenamiento en memoria para analytics y leads
+// Almacenamiento en memoria para analytics, leads y A/B testing
 const analyticsLog: any[] = [];
 const leadsDatabase: any[] = [];
+const abTestVariants: Record<string, string[]> = {
+  startup: ["variant_a", "variant_b"],
+  enterprise: ["variant_a", "variant_b"],
+  agency: ["variant_a", "variant_b"],
+  freelancer: ["variant_a", "variant_b"],
+};
+const abTestResults: Record<string, any> = {};
 
 async function startServer() {
   const app = express();
@@ -32,7 +39,6 @@ async function startServer() {
       
       analyticsLog.push(analyticsEntry);
       
-      // Mantener solo los últimos 1000 eventos en memoria
       if (analyticsLog.length > 1000) {
         analyticsLog.shift();
       }
@@ -84,10 +90,204 @@ async function startServer() {
     }
   });
 
+  // Endpoint para enviar leads a CRM (HubSpot/Pipedrive)
+  app.post("/api/crm/sync", async (req, res) => {
+    try {
+      const { email, name, phone, company, segment, leadId } = req.body;
+      const hubspotApiKey = process.env.HUBSPOT_API_KEY;
+      const pipedrivApiKey = process.env.PIPEDRIVE_API_KEY;
+
+      const crmData = {
+        email,
+        name,
+        phone: phone || "",
+        company: company || "",
+        segment,
+        source: "DILAURO_CHATBOT",
+        leadId,
+      };
+
+      // Enviar a HubSpot si está configurado
+      if (hubspotApiKey) {
+        try {
+          const hubspotResponse = await fetch("https://api.hubapi.com/crm/v3/objects/contacts", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${hubspotApiKey}`,
+            },
+            body: JSON.stringify({
+              properties: {
+                firstname: name.split(" ")[0],
+                lastname: name.split(" ").slice(1).join(" "),
+                email,
+                phone,
+                company,
+                hs_lead_status: "NEW",
+                lifecyclestage: "lead",
+                source: "DILAURO_CHATBOT",
+              },
+            }),
+          });
+
+          if (hubspotResponse.ok) {
+            console.log(`[CRM] Lead synced to HubSpot: ${email}`);
+          }
+        } catch (err) {
+          console.error("HubSpot sync error:", err);
+        }
+      }
+
+      // Enviar a Pipedrive si está configurado
+      if (pipedrivApiKey) {
+        try {
+          const pipedrivResponse = await fetch(`https://api.pipedrive.com/v1/persons?api_token=${pipedrivApiKey}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name,
+              email: [{ value: email, primary: true }],
+              phone: [{ value: phone, primary: true }],
+              org_id: company,
+              custom_fields: { segment },
+            }),
+          });
+
+          if (pipedrivResponse.ok) {
+            console.log(`[CRM] Lead synced to Pipedrive: ${email}`);
+          }
+        } catch (err) {
+          console.error("Pipedrive sync error:", err);
+        }
+      }
+
+      res.json({ success: true, crmData });
+    } catch (error) {
+      console.error("Error en /api/crm/sync:", error);
+      res.status(500).json({ error: "Error al sincronizar con CRM" });
+    }
+  });
+
+  // Endpoint para webhooks (Zapier, Make, etc)
+  app.post("/api/webhooks/trigger", async (req, res) => {
+    try {
+      const { event, data, webhookUrl } = req.body;
+
+      if (!webhookUrl) {
+        return res.status(400).json({ error: "webhookUrl requerido" });
+      }
+
+      // Enviar a webhook externo
+      const webhookResponse = await fetch(webhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          event,
+          timestamp: new Date().toISOString(),
+          data,
+        }),
+      });
+
+      console.log(`[Webhook] Event '${event}' sent to ${webhookUrl}`);
+      res.json({ success: true, webhookStatus: webhookResponse.status });
+    } catch (error) {
+      console.error("Error en /api/webhooks/trigger:", error);
+      res.status(500).json({ error: "Error al enviar webhook" });
+    }
+  });
+
+  // Endpoint para A/B testing - obtener variante
+  app.post("/api/ab-test/variant", async (req, res) => {
+    try {
+      const { sessionId, segment } = req.body;
+
+      if (!segment || !abTestVariants[segment]) {
+        return res.status(400).json({ error: "Segmento invalido" });
+      }
+
+      // Seleccionar variante aleatoria
+      const variants = abTestVariants[segment];
+      const variant = variants[Math.floor(Math.random() * variants.length)];
+
+      // Registrar asignacion
+      if (!abTestResults[sessionId]) {
+        abTestResults[sessionId] = {};
+      }
+      abTestResults[sessionId].variant = variant;
+      abTestResults[sessionId].segment = segment;
+      abTestResults[sessionId].assignedAt = new Date().toISOString();
+
+      console.log(`[A/B Test] Session ${sessionId} assigned to ${variant}`);
+      res.json({ variant, sessionId });
+    } catch (error) {
+      console.error("Error en /api/ab-test/variant:", error);
+      res.status(500).json({ error: "Error al asignar variante" });
+    }
+  });
+
+  // Endpoint para registrar resultado de A/B test
+  app.post("/api/ab-test/result", async (req, res) => {
+    try {
+      const { sessionId, variant, metric, value } = req.body;
+
+      if (!abTestResults[sessionId]) {
+        abTestResults[sessionId] = {};
+      }
+
+      if (!abTestResults[sessionId].metrics) {
+        abTestResults[sessionId].metrics = [];
+      }
+
+      abTestResults[sessionId].metrics.push({
+        metric,
+        value,
+        recordedAt: new Date().toISOString(),
+      });
+
+      console.log(`[A/B Test] Result recorded for ${sessionId}: ${metric}=${value}`);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error en /api/ab-test/result:", error);
+      res.status(500).json({ error: "Error al registrar resultado" });
+    }
+  });
+
+  // Endpoint para obtener estadisticas de A/B test
+  app.get("/api/ab-test/stats", (req, res) => {
+    try {
+      const stats: Record<string, any> = {
+        variant_a: { conversions: 0, sessions: 0, conversionRate: 0 },
+        variant_b: { conversions: 0, sessions: 0, conversionRate: 0 },
+      };
+
+      Object.values(abTestResults).forEach((result: any) => {
+        const variant = result.variant;
+        if (stats[variant]) {
+          stats[variant].sessions++;
+          if (result.metrics && result.metrics.some((m: any) => m.metric === "conversion" && m.value === true)) {
+            stats[variant].conversions++;
+          }
+        }
+      });
+
+      // Calcular tasas de conversion
+      Object.keys(stats).forEach(variant => {
+        stats[variant].conversionRate = stats[variant].sessions > 0 
+          ? ((stats[variant].conversions / stats[variant].sessions) * 100).toFixed(2) 
+          : "0";
+      });
+
+      res.json(stats);
+    } catch (error) {
+      console.error("Error en /api/ab-test/stats:", error);
+      res.status(500).json({ error: "Error al obtener estadisticas" });
+    }
+  });
+
   // Endpoint para capturar leads
   app.post("/api/leads", async (req, res) => {
     try {
-      const { email, name, phone, company, sessionId, capturedAt, segment } = req.body;
+      const { email, name, phone, company, sessionId, capturedAt, segment, variant } = req.body;
       
       if (!email || !name) {
         return res.status(400).json({ error: "Email y nombre son requeridos" });
@@ -100,6 +300,7 @@ async function startServer() {
         phone: phone || null,
         company: company || null,
         segment: segment || "general",
+        variant: variant || "control",
         sessionId,
         capturedAt,
         recordedAt: new Date().toISOString(),
@@ -107,60 +308,71 @@ async function startServer() {
       
       leadsDatabase.push(leadEntry);
       
-      console.log(`[Lead Captured] ${name} (${email}) - Segment: ${segment || "general"}`);
+      console.log(`[Lead Captured] ${name} (${email}) - Segment: ${segment || "general"} - Variant: ${variant || "control"}`);
       
-      // Enviar email de confirmacion al usuario
+      // Enviar email de confirmacion
       const userEmailHtml = `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
           <h2 style="color: #2563eb;">Gracias por tu interes en DILAURO</h2>
           <p>Hola <strong>${name}</strong>,</p>
-          <p>Hemos recibido tu informacion y nos pondremos en contacto pronto para discutir como DILAURO puede transformar tu presencia digital.</p>
-          <p><strong>Proximos pasos:</strong></p>
-          <ul>
-            <li>Nuestro equipo revisara tu solicitud</li>
-            <li>Te contactaremos en las proximas 24 horas</li>
-            <li>Agendaremos una demo personalizada</li>
-          </ul>
+          <p>Hemos recibido tu informacion y nos pondremos en contacto pronto.</p>
           <p>¡Esperamos conectar contigo pronto!</p>
           <p>Equipo DILAURO</p>
         </div>
       `;
       
-      // Enviar email al usuario
       fetch("http://localhost:3000/api/send-email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           to: email,
           name,
-          subject: "Bienvenido a DILAURO - Confirmacion de tu solicitud",
+          subject: "Bienvenido a DILAURO",
           html: userEmailHtml,
         }),
       }).catch(err => console.error("Error sending user email:", err));
       
-      // Enviar notificacion al equipo de ventas
-      const salesEmailHtml = `
-        <div style="font-family: Arial, sans-serif;">
-          <h3>Nuevo Lead Capturado</h3>
-          <p><strong>Nombre:</strong> ${name}</p>
-          <p><strong>Email:</strong> ${email}</p>
-          <p><strong>Telefono:</strong> ${phone || "No proporcionado"}</p>
-          <p><strong>Empresa:</strong> ${company || "No proporcionado"}</p>
-          <p><strong>Segmento:</strong> ${segment || "general"}</p>
-          <p><strong>Capturado:</strong> ${new Date(capturedAt).toLocaleString()}</p>
-        </div>
-      `;
-      
-      fetch("http://localhost:3000/api/send-email", {
+      // Sincronizar con CRM
+      fetch("http://localhost:3000/api/crm/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          to: "ventas@dilauro.com",
-          name: "Equipo DILAURO",
-          subject: `Nuevo Lead: ${name}`,
-          html: salesEmailHtml,
+          email,
+          name,
+          phone,
+          company,
+          segment: segment || "general",
+          leadId: leadEntry.id,
         }),
-      }).catch(err => console.error("Error sending sales email:", err));
+      }).catch(err => console.error("Error syncing to CRM:", err));
+
+      // Disparar webhook para automatizaciones
+      const webhookUrl = process.env.ZAPIER_WEBHOOK_URL || process.env.MAKE_WEBHOOK_URL;
+      if (webhookUrl) {
+        fetch("http://localhost:3000/api/webhooks/trigger", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            event: "lead_captured",
+            data: leadEntry,
+            webhookUrl,
+          }),
+        }).catch(err => console.error("Error triggering webhook:", err));
+      }
+
+      // Registrar resultado de A/B test
+      if (variant) {
+        fetch("http://localhost:3000/api/ab-test/result", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sessionId,
+            variant,
+            metric: "conversion",
+            value: true,
+          }),
+        }).catch(err => console.error("Error recording A/B test result:", err));
+      }
       
       res.json({ success: true, leadId: leadEntry.id });
     } catch (error) {
@@ -176,13 +388,11 @@ async function startServer() {
       const eventTypes: string[] = [];
       eventTypesSet.forEach(type => eventTypes.push(type as string));
       
-      // Calcular metricas
       const totalSessions = new Set(analyticsLog.map(e => e.sessionId)).size;
       const totalMessages = analyticsLog.filter(e => e.eventType === "user_message").length;
       const totalLeads = leadsDatabase.length;
       const conversionRate = totalSessions > 0 ? ((totalLeads / totalSessions) * 100).toFixed(2) : "0";
       
-      // Agrupar leads por segmento
       const leadsBySegment: Record<string, number> = {};
       leadsDatabase.forEach(lead => {
         const seg = lead.segment || "general";
@@ -212,7 +422,6 @@ async function startServer() {
     try {
       const { messages, model, max_tokens, temperature } = req.body;
 
-      // Obtener la clave API de Groq desde las variables de entorno
       const groqApiKey = process.env.Gorq_API;
 
       if (!groqApiKey) {
@@ -221,7 +430,6 @@ async function startServer() {
         });
       }
 
-      // Llamar a la API de Groq
       const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -254,7 +462,7 @@ async function startServer() {
     }
   });
 
-  // Serve static files from dist/public in production
+  // Serve static files
   const staticPath =
     process.env.NODE_ENV === "production"
       ? path.resolve(__dirname, "public")
@@ -262,7 +470,7 @@ async function startServer() {
 
   app.use(express.static(staticPath));
 
-  // Handle client-side routing - serve index.html for all routes
+  // Handle client-side routing
   app.get("*", (_req, res) => {
     res.sendFile(path.join(staticPath, "index.html"));
   });
