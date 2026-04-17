@@ -6,12 +6,96 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Almacenamiento en memoria para analytics y leads
+const analyticsLog: any[] = [];
+const leadsDatabase: any[] = [];
+
 async function startServer() {
   const app = express();
   const server = createServer(app);
 
   // Middleware
   app.use(express.json());
+
+  // Endpoint para analytics
+  app.post("/api/analytics", async (req, res) => {
+    try {
+      const { sessionId, eventType, timestamp, data } = req.body;
+      
+      const analyticsEntry = {
+        sessionId,
+        eventType,
+        timestamp,
+        data,
+        recordedAt: new Date().toISOString(),
+      };
+      
+      analyticsLog.push(analyticsEntry);
+      
+      // Mantener solo los últimos 1000 eventos en memoria
+      if (analyticsLog.length > 1000) {
+        analyticsLog.shift();
+      }
+      
+      console.log(`[Analytics] ${eventType}:`, data);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error en /api/analytics:", error);
+      res.status(500).json({ error: "Error al registrar analytics" });
+    }
+  });
+
+  // Endpoint para capturar leads
+  app.post("/api/leads", async (req, res) => {
+    try {
+      const { email, name, phone, company, sessionId, capturedAt } = req.body;
+      
+      if (!email || !name) {
+        return res.status(400).json({ error: "Email y nombre son requeridos" });
+      }
+      
+      const leadEntry = {
+        id: Date.now().toString(),
+        email,
+        name,
+        phone: phone || null,
+        company: company || null,
+        sessionId,
+        capturedAt,
+        recordedAt: new Date().toISOString(),
+      };
+      
+      leadsDatabase.push(leadEntry);
+      
+      console.log(`[Lead Captured] ${name} (${email})`);
+      
+      res.json({ success: true, leadId: leadEntry.id });
+    } catch (error) {
+      console.error("Error en /api/leads:", error);
+      res.status(500).json({ error: "Error al capturar lead" });
+    }
+  });
+
+  // Endpoint para obtener estadísticas de analytics
+  app.get("/api/analytics/stats", (req, res) => {
+    try {
+      const eventTypesSet = new Set(analyticsLog.map(e => e.eventType));
+      const eventTypes: string[] = [];
+      eventTypesSet.forEach(type => eventTypes.push(type as string));
+      
+      const stats = {
+        totalEvents: analyticsLog.length,
+        totalLeads: leadsDatabase.length,
+        eventTypes,
+        recentLeads: leadsDatabase.slice(-10),
+        recentEvents: analyticsLog.slice(-20),
+      };
+      res.json(stats);
+    } catch (error) {
+      console.error("Error en /api/analytics/stats:", error);
+      res.status(500).json({ error: "Error al obtener estadísticas" });
+    }
+  });
 
   // Endpoint para llamar a Groq API
   app.post("/api/groq", async (req, res) => {
