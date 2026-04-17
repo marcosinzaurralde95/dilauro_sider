@@ -4,15 +4,20 @@ import NotFound from "@/pages/NotFound";
 import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
+import NotificationCenter from "./components/NotificationCenter";
 import Home from "./pages/Home";
 import Analytics from "./pages/Analytics";
 import ABTesting from "./pages/ABTesting";
+import Pricing from "./pages/Pricing";
+import Referrals from "./pages/Referrals";
 
 
 function Router() {
   return (
     <Switch>
       <Route path={"/?"} component={Home} />
+      <Route path={"/pricing"} component={Pricing} />
+      <Route path={"/referrals"} component={Referrals} />
       <Route path={"/analytics"} component={Analytics} />
       <Route path={"/ab-testing"} component={ABTesting} />
       <Route path={"/404"} component={NotFound} />
@@ -36,6 +41,7 @@ function App() {
       >
         <TooltipProvider>
           <Toaster />
+          <NotificationCenter />
           <Router />
         </TooltipProvider>
       </ThemeProvider>

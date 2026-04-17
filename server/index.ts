@@ -6,9 +6,12 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Almacenamiento en memoria para analytics, leads y A/B testing
+// Almacenamiento en memoria para analytics, leads, A/B testing, referrals y suscripciones
 const analyticsLog: any[] = [];
 const leadsDatabase: any[] = [];
+const referralsDatabase: any[] = [];
+const subscriptionsDatabase: any[] = [];
+const notificationsQueue: any[] = [];
 const abTestVariants: Record<string, string[]> = {
   startup: ["variant_a", "variant_b"],
   enterprise: ["variant_a", "variant_b"],
@@ -16,6 +19,16 @@ const abTestVariants: Record<string, string[]> = {
   freelancer: ["variant_a", "variant_b"],
 };
 const abTestResults: Record<string, any> = {};
+
+// Planes de suscripción
+const SUBSCRIPTION_PLANS = {
+  starter: { name: "Starter", price: 2999, currency: "usd", interval: "month", features: ["Presencia básica", "Chatbot IA", "Analytics"] },
+  professional: { name: "Professional", price: 7999, currency: "usd", interval: "month", features: ["Presencia premium", "Chatbot IA avanzado", "Analytics completo", "CRM integrado"] },
+  enterprise: { name: "Enterprise", price: 19999, currency: "usd", interval: "month", features: ["Todo incluido", "Soporte 24/7", "Integraciones custom", "Equipo dedicado"] },
+};
+
+// Comisiones de referral
+const REFERRAL_COMMISSION = 0.20; // 20% de comisión
 
 async function startServer() {
   const app = express();
@@ -414,6 +427,216 @@ async function startServer() {
     } catch (error) {
       console.error("Error en /api/analytics/stats:", error);
       res.status(500).json({ error: "Error al obtener estadisticas" });
+    }
+  });
+
+  // Endpoint para crear sesión de pago con Stripe
+  app.post("/api/stripe/checkout", async (req, res) => {
+    try {
+      const { planId, email, referralCode } = req.body;
+      const stripeApiKey = process.env.STRIPE_SECRET_KEY;
+
+      if (!stripeApiKey) {
+        return res.status(500).json({ error: "Stripe no configurado" });
+      }
+
+      const plan = SUBSCRIPTION_PLANS[planId as keyof typeof SUBSCRIPTION_PLANS];
+      if (!plan) {
+        return res.status(400).json({ error: "Plan inválido" });
+      }
+
+      // Crear sesión de Stripe Checkout
+      const response = await fetch("https://api.stripe.com/v1/checkout/sessions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${stripeApiKey}`,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          "payment_method_types[0]": "card",
+          "line_items[0][price_data][currency]": plan.currency,
+          "line_items[0][price_data][product_data][name]": plan.name,
+          "line_items[0][price_data][unit_amount]": plan.price.toString(),
+          "line_items[0][quantity]": "1",
+          "mode": "subscription",
+          "success_url": "https://dilauro.com/success?session_id={CHECKOUT_SESSION_ID}",
+          "cancel_url": "https://dilauro.com/cancel",
+          "customer_email": email,
+          "metadata[referralCode]": referralCode || "",
+          "metadata[planId]": planId,
+        }).toString(),
+      });
+
+      const data = await response.json();
+      console.log(`[Stripe] Checkout session created for ${email}`);
+      res.json({ sessionId: data.id, url: data.url });
+    } catch (error) {
+      console.error("Error en /api/stripe/checkout:", error);
+      res.status(500).json({ error: "Error al crear sesión de pago" });
+    }
+  });
+
+  // Endpoint para generar código de referral
+  app.post("/api/referrals/generate", async (req, res) => {
+    try {
+      const { userId, email, name } = req.body;
+
+      if (!userId || !email) {
+        return res.status(400).json({ error: "userId y email requeridos" });
+      }
+
+      const referralCode = `REF-${userId}-${Math.random().toString(36).substring(7).toUpperCase()}`;
+      const referralLink = `https://dilauro.com?ref=${referralCode}`;
+
+      const referralEntry = {
+        id: Date.now().toString(),
+        userId,
+        email,
+        name,
+        referralCode,
+        referralLink,
+        totalEarnings: 0,
+        totalReferrals: 0,
+        createdAt: new Date().toISOString(),
+      };
+
+      referralsDatabase.push(referralEntry);
+      console.log(`[Referral] Code generated: ${referralCode}`);
+      res.json(referralEntry);
+    } catch (error) {
+      console.error("Error en /api/referrals/generate:", error);
+      res.status(500).json({ error: "Error al generar código de referral" });
+    }
+  });
+
+  // Endpoint para registrar referral conversion
+  app.post("/api/referrals/convert", async (req, res) => {
+    try {
+      const { referralCode, newUserId, planId, amount } = req.body;
+
+      if (!referralCode || !newUserId || !planId) {
+        return res.status(400).json({ error: "Parámetros requeridos" });
+      }
+
+      const referrer = referralsDatabase.find(r => r.referralCode === referralCode);
+      if (!referrer) {
+        return res.status(404).json({ error: "Código de referral no encontrado" });
+      }
+
+      const commission = (amount || SUBSCRIPTION_PLANS[planId as keyof typeof SUBSCRIPTION_PLANS]?.price || 0) * REFERRAL_COMMISSION;
+
+      const conversion = {
+        id: Date.now().toString(),
+        referralCode,
+        referrerId: referrer.userId,
+        newUserId,
+        planId,
+        amount: amount || SUBSCRIPTION_PLANS[planId as keyof typeof SUBSCRIPTION_PLANS]?.price,
+        commission,
+        status: "completed",
+        convertedAt: new Date().toISOString(),
+      };
+
+      referrer.totalReferrals++;
+      referrer.totalEarnings += commission;
+
+      console.log(`[Referral] Conversion: ${referralCode} earned $${(commission / 100).toFixed(2)}`);
+      res.json(conversion);
+    } catch (error) {
+      console.error("Error en /api/referrals/convert:", error);
+      res.status(500).json({ error: "Error al procesar referral" });
+    }
+  });
+
+  // Endpoint para obtener stats de referral
+  app.get("/api/referrals/stats/:userId", (req, res) => {
+    try {
+      const { userId } = req.params;
+      const referral = referralsDatabase.find(r => r.userId === userId);
+
+      if (!referral) {
+        return res.status(404).json({ error: "Usuario no encontrado" });
+      }
+
+      res.json(referral);
+    } catch (error) {
+      console.error("Error en /api/referrals/stats:", error);
+      res.status(500).json({ error: "Error al obtener stats" });
+    }
+  });
+
+  // Endpoint para enviar notificaciones push
+  app.post("/api/notifications/send", async (req, res) => {
+    try {
+      const { userId, title, message, type, data } = req.body;
+
+      const notification = {
+        id: Date.now().toString(),
+        userId,
+        title,
+        message,
+        type,
+        data,
+        read: false,
+        sentAt: new Date().toISOString(),
+      };
+
+      notificationsQueue.push(notification);
+
+      // Mantener solo las últimas 500 notificaciones
+      if (notificationsQueue.length > 500) {
+        notificationsQueue.shift();
+      }
+
+      console.log(`[Notification] Sent to ${userId}: ${title}`);
+      res.json({ success: true, notificationId: notification.id });
+    } catch (error) {
+      console.error("Error en /api/notifications/send:", error);
+      res.status(500).json({ error: "Error al enviar notificación" });
+    }
+  });
+
+  // Endpoint para obtener notificaciones de un usuario
+  app.get("/api/notifications/:userId", (req, res) => {
+    try {
+      const { userId } = req.params;
+      const userNotifications = notificationsQueue.filter(n => n.userId === userId);
+      res.json(userNotifications);
+    } catch (error) {
+      console.error("Error en /api/notifications/:userId:", error);
+      res.status(500).json({ error: "Error al obtener notificaciones" });
+    }
+  });
+
+  // Endpoint para marcar notificación como leída
+  app.post("/api/notifications/:notificationId/read", (req, res) => {
+    try {
+      const { notificationId } = req.params;
+      const notification = notificationsQueue.find(n => n.id === notificationId);
+
+      if (!notification) {
+        return res.status(404).json({ error: "Notificación no encontrada" });
+      }
+
+      notification.read = true;
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error en /api/notifications/:notificationId/read:", error);
+      res.status(500).json({ error: "Error al marcar como leída" });
+    }
+  });
+
+  // Endpoint para obtener planes de suscripción
+  app.get("/api/subscription/plans", (req, res) => {
+    try {
+      const plans = Object.entries(SUBSCRIPTION_PLANS).map(([id, plan]) => ({
+        id,
+        ...plan,
+      }));
+      res.json(plans);
+    } catch (error) {
+      console.error("Error en /api/subscription/plans:", error);
+      res.status(500).json({ error: "Error al obtener planes" });
     }
   });
 
