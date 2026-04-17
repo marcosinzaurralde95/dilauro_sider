@@ -45,10 +45,49 @@ async function startServer() {
     }
   });
 
+  // Endpoint para enviar emails con Sendgrid
+  app.post("/api/send-email", async (req, res) => {
+    try {
+      const { to, subject, html, name } = req.body;
+      const sendgridApiKey = process.env.SENDGRID_API_KEY;
+
+      if (!sendgridApiKey) {
+        console.log("[Email] Sendgrid no configurado, simulando envio a:", to);
+        return res.json({ success: true, simulated: true, message: "Email simulado" });
+      }
+
+      const response = await fetch("https://api.sendgrid.com/v3/mail/send", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${sendgridApiKey}`,
+        },
+        body: JSON.stringify({
+          personalizations: [{ to: [{ email: to, name }] }],
+          from: { email: "noreply@dilauro.com", name: "DILAURO" },
+          subject,
+          content: [{ type: "text/html", value: html }],
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        console.error("Sendgrid Error:", error);
+        return res.status(response.status).json({ error: "Error al enviar email" });
+      }
+
+      console.log(`[Email Sent] To: ${to}, Subject: ${subject}`);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error en /api/send-email:", error);
+      res.status(500).json({ error: "Error al enviar email" });
+    }
+  });
+
   // Endpoint para capturar leads
   app.post("/api/leads", async (req, res) => {
     try {
-      const { email, name, phone, company, sessionId, capturedAt } = req.body;
+      const { email, name, phone, company, sessionId, capturedAt, segment } = req.body;
       
       if (!email || !name) {
         return res.status(400).json({ error: "Email y nombre son requeridos" });
@@ -60,6 +99,7 @@ async function startServer() {
         name,
         phone: phone || null,
         company: company || null,
+        segment: segment || "general",
         sessionId,
         capturedAt,
         recordedAt: new Date().toISOString(),
@@ -67,7 +107,60 @@ async function startServer() {
       
       leadsDatabase.push(leadEntry);
       
-      console.log(`[Lead Captured] ${name} (${email})`);
+      console.log(`[Lead Captured] ${name} (${email}) - Segment: ${segment || "general"}`);
+      
+      // Enviar email de confirmacion al usuario
+      const userEmailHtml = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #2563eb;">Gracias por tu interes en DILAURO</h2>
+          <p>Hola <strong>${name}</strong>,</p>
+          <p>Hemos recibido tu informacion y nos pondremos en contacto pronto para discutir como DILAURO puede transformar tu presencia digital.</p>
+          <p><strong>Proximos pasos:</strong></p>
+          <ul>
+            <li>Nuestro equipo revisara tu solicitud</li>
+            <li>Te contactaremos en las proximas 24 horas</li>
+            <li>Agendaremos una demo personalizada</li>
+          </ul>
+          <p>¡Esperamos conectar contigo pronto!</p>
+          <p>Equipo DILAURO</p>
+        </div>
+      `;
+      
+      // Enviar email al usuario
+      fetch("http://localhost:3000/api/send-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          to: email,
+          name,
+          subject: "Bienvenido a DILAURO - Confirmacion de tu solicitud",
+          html: userEmailHtml,
+        }),
+      }).catch(err => console.error("Error sending user email:", err));
+      
+      // Enviar notificacion al equipo de ventas
+      const salesEmailHtml = `
+        <div style="font-family: Arial, sans-serif;">
+          <h3>Nuevo Lead Capturado</h3>
+          <p><strong>Nombre:</strong> ${name}</p>
+          <p><strong>Email:</strong> ${email}</p>
+          <p><strong>Telefono:</strong> ${phone || "No proporcionado"}</p>
+          <p><strong>Empresa:</strong> ${company || "No proporcionado"}</p>
+          <p><strong>Segmento:</strong> ${segment || "general"}</p>
+          <p><strong>Capturado:</strong> ${new Date(capturedAt).toLocaleString()}</p>
+        </div>
+      `;
+      
+      fetch("http://localhost:3000/api/send-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          to: "ventas@dilauro.com",
+          name: "Equipo DILAURO",
+          subject: `Nuevo Lead: ${name}`,
+          html: salesEmailHtml,
+        }),
+      }).catch(err => console.error("Error sending sales email:", err));
       
       res.json({ success: true, leadId: leadEntry.id });
     } catch (error) {
@@ -76,16 +169,33 @@ async function startServer() {
     }
   });
 
-  // Endpoint para obtener estadísticas de analytics
+  // Endpoint para obtener estadisticas de analytics
   app.get("/api/analytics/stats", (req, res) => {
     try {
       const eventTypesSet = new Set(analyticsLog.map(e => e.eventType));
       const eventTypes: string[] = [];
       eventTypesSet.forEach(type => eventTypes.push(type as string));
       
+      // Calcular metricas
+      const totalSessions = new Set(analyticsLog.map(e => e.sessionId)).size;
+      const totalMessages = analyticsLog.filter(e => e.eventType === "user_message").length;
+      const totalLeads = leadsDatabase.length;
+      const conversionRate = totalSessions > 0 ? ((totalLeads / totalSessions) * 100).toFixed(2) : "0";
+      
+      // Agrupar leads por segmento
+      const leadsBySegment: Record<string, number> = {};
+      leadsDatabase.forEach(lead => {
+        const seg = lead.segment || "general";
+        leadsBySegment[seg] = (leadsBySegment[seg] || 0) + 1;
+      });
+      
       const stats = {
         totalEvents: analyticsLog.length,
-        totalLeads: leadsDatabase.length,
+        totalSessions,
+        totalMessages,
+        totalLeads,
+        conversionRate: `${conversionRate}%`,
+        leadsBySegment,
         eventTypes,
         recentLeads: leadsDatabase.slice(-10),
         recentEvents: analyticsLog.slice(-20),
@@ -93,7 +203,7 @@ async function startServer() {
       res.json(stats);
     } catch (error) {
       console.error("Error en /api/analytics/stats:", error);
-      res.status(500).json({ error: "Error al obtener estadísticas" });
+      res.status(500).json({ error: "Error al obtener estadisticas" });
     }
   });
 

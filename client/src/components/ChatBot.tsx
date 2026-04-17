@@ -19,8 +19,11 @@ interface LeadData {
   name: string;
   phone?: string;
   company?: string;
+  segment?: string;
   captured: boolean;
 }
+
+type UserSegment = 'startup' | 'enterprise' | 'agency' | 'freelancer' | 'general';
 
 const QUICK_QUESTIONS = [
   '¿Qué es DILAURO?',
@@ -29,7 +32,30 @@ const QUICK_QUESTIONS = [
   'Solicitar demo',
 ];
 
-const SYSTEM_PROMPT = `Eres un asistente de soporte profesional para DILAURO, una solución de presencia digital premium diseñada para marcas de élite.
+// Prompts personalizados por segmento
+const SEGMENT_PROMPTS: Record<UserSegment, string> = {
+  startup: `Eres un asistente de soporte especializado en startups para DILAURO. 
+Enfatiza: velocidad de implementación, escalabilidad, costo-efectividad, y cómo DILAURO acelera el time-to-market.
+Menciona planes flexibles y opciones para empresas en crecimiento.`,
+  
+  enterprise: `Eres un asistente de soporte especializado en empresas para DILAURO.
+Enfatiza: seguridad, escalabilidad empresarial, soporte dedicado, integraciones complejas, y ROI a largo plazo.
+Menciona SLA, compliance, y opciones de customización.`,
+  
+  agency: `Eres un asistente de soporte especializado en agencias para DILAURO.
+Enfatiza: capacidad de gestionar múltiples clientes, white-label, herramientas de colaboración, y márgenes de ganancia.
+Menciona planes de agencia y beneficios de reseller.`,
+  
+  freelancer: `Eres un asistente de soporte especializado en freelancers para DILAURO.
+Enfatiza: facilidad de uso, automatización, templates reutilizables, y cómo ahorrar tiempo en proyectos.
+Menciona precios accesibles y planes por proyecto.`,
+  
+  general: `Eres un asistente de soporte profesional para DILAURO, una solución de presencia digital premium.
+Propuesta de valor: Elegancia que avanza contigo.
+Beneficios: Presencia Premium, Claridad Instantánea, Experiencia Fluida, Conversión Optimizada.`
+};
+
+const BASE_SYSTEM_PROMPT = `Eres un asistente de soporte profesional para DILAURO, una solución de presencia digital premium diseñada para marcas de élite.
 
 INFORMACIÓN SOBRE DILAURO:
 - DILAURO es una plataforma de presencia digital premium con activación rápida, UX sin fricción y diseño orientado a conversión
@@ -55,11 +81,14 @@ export default function ChatBot({ isOpen = false, onClose }: ChatBotProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showLeadForm, setShowLeadForm] = useState(false);
+  const [showSegmentSelection, setShowSegmentSelection] = useState(false);
+  const [userSegment, setUserSegment] = useState<UserSegment>('general');
   const [leadData, setLeadData] = useState<LeadData>({
     email: '',
     name: '',
     phone: '',
     company: '',
+    segment: 'general',
     captured: false,
   });
   const [showEscalation, setShowEscalation] = useState(false);
@@ -67,23 +96,17 @@ export default function ChatBot({ isOpen = false, onClose }: ChatBotProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const sessionIdRef = useRef<string>(Date.now().toString());
 
-  // Inicializar con mensaje de bienvenida
+  // Inicializar con selección de segmento
   useEffect(() => {
     if (open && messages.length === 0) {
-      const greetings = [
-        '¡Hola! 👋 Bienvenido a DILAURO. Soy tu asistente de soporte con IA. ¿Cómo puedo ayudarte hoy?',
-        '¡Hola! 👋 Estoy aquí para responder tus preguntas sobre DILAURO. ¿Qué te gustaría saber?',
-        '¡Bienvenido! 👋 Soy el asistente inteligente de DILAURO. ¿En qué puedo asistirte?',
-      ];
-      const greeting = greetings[Math.floor(Math.random() * greetings.length)];
-      setMessages([
-        {
-          id: '1',
-          type: 'bot',
-          text: greeting,
-          timestamp: new Date(),
-        },
-      ]);
+      setShowSegmentSelection(true);
+      const greetingMsg: Message = {
+        id: '0',
+        type: 'system',
+        text: '¿Cuál es tu perfil? Esto nos ayudará a personalizar mejor nuestro soporte.',
+        timestamp: new Date(),
+      };
+      setMessages([greetingMsg]);
     }
   }, [open]);
 
@@ -102,12 +125,44 @@ export default function ChatBot({ isOpen = false, onClose }: ChatBotProps) {
           sessionId: sessionIdRef.current,
           eventType,
           timestamp: new Date().toISOString(),
-          data,
+          data: { ...data, segment: userSegment },
         }),
       });
     } catch (err) {
       console.error('Error logging analytics:', err);
     }
+  };
+
+  // Seleccionar segmento
+  const handleSegmentSelection = (segment: UserSegment) => {
+    setUserSegment(segment);
+    setShowSegmentSelection(false);
+    
+    const segmentLabels: Record<UserSegment, string> = {
+      startup: 'Startup',
+      enterprise: 'Empresa',
+      agency: 'Agencia',
+      freelancer: 'Freelancer',
+      general: 'General',
+    };
+
+    const userMsg: Message = {
+      id: Date.now().toString(),
+      type: 'user',
+      text: `Soy ${segmentLabels[segment]}`,
+      timestamp: new Date(),
+    };
+    setMessages(prev => [...prev, userMsg]);
+
+    const botMsg: Message = {
+      id: (Date.now() + 1).toString(),
+      type: 'bot',
+      text: `¡Perfecto! Soy especialista en soluciones para ${segmentLabels[segment].toLowerCase()}s. ¿Cómo puedo ayudarte hoy?`,
+      timestamp: new Date(),
+    };
+    setMessages(prev => [...prev, botMsg]);
+
+    logAnalytics('segment_selected', { segment });
   };
 
   // Función para llamar a la API de Groq
@@ -125,6 +180,8 @@ export default function ChatBot({ isOpen = false, onClose }: ChatBotProps) {
         content: userMessage,
       });
 
+      const systemPrompt = BASE_SYSTEM_PROMPT + '\n\n' + SEGMENT_PROMPTS[userSegment];
+
       const response = await fetch('/api/groq', {
         method: 'POST',
         headers: {
@@ -134,7 +191,7 @@ export default function ChatBot({ isOpen = false, onClose }: ChatBotProps) {
           messages: [
             {
               role: 'system',
-              content: SYSTEM_PROMPT,
+              content: systemPrompt,
             },
             ...conversationHistory,
           ],
@@ -192,7 +249,6 @@ export default function ChatBot({ isOpen = false, onClose }: ChatBotProps) {
     setError(null);
     setConversationCount(prev => prev + 1);
 
-    // Log analytics
     await logAnalytics('user_message', {
       message: input,
       conversationCount,
@@ -200,7 +256,6 @@ export default function ChatBot({ isOpen = false, onClose }: ChatBotProps) {
     });
 
     try {
-      // Verificar si necesita escalada
       if (shouldEscalate(input) && conversationCount > 2) {
         setShowEscalation(true);
         const escalationMsg: Message = {
@@ -215,7 +270,6 @@ export default function ChatBot({ isOpen = false, onClose }: ChatBotProps) {
         return;
       }
 
-      // Llamar a Groq API
       const botResponse = await callGroqAPI(input);
       
       const botMessage: Message = {
@@ -226,7 +280,6 @@ export default function ChatBot({ isOpen = false, onClose }: ChatBotProps) {
       };
       setMessages((prev) => [...prev, botMessage]);
 
-      // Verificar si mostrar formulario de leads
       if (shouldShowLeadForm(input) && !leadData.captured) {
         setTimeout(() => {
           setShowLeadForm(true);
@@ -264,12 +317,12 @@ export default function ChatBot({ isOpen = false, onClose }: ChatBotProps) {
     }
 
     try {
-      // Enviar lead a backend
       const response = await fetch('/api/leads', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...leadData,
+          segment: userSegment,
           sessionId: sessionIdRef.current,
           capturedAt: new Date().toISOString(),
         }),
@@ -279,11 +332,9 @@ export default function ChatBot({ isOpen = false, onClose }: ChatBotProps) {
         throw new Error('Error al guardar lead');
       }
 
-      // Marcar como capturado
       setLeadData(prev => ({ ...prev, captured: true }));
       setShowLeadForm(false);
 
-      // Agregar mensaje de confirmación
       const confirmMsg: Message = {
         id: Date.now().toString(),
         type: 'system',
@@ -296,6 +347,7 @@ export default function ChatBot({ isOpen = false, onClose }: ChatBotProps) {
         email: leadData.email,
         name: leadData.name,
         company: leadData.company,
+        segment: userSegment,
       });
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Error desconocido';
@@ -315,7 +367,6 @@ export default function ChatBot({ isOpen = false, onClose }: ChatBotProps) {
     setMessages((prev) => [...prev, escalationMsg]);
     setShowEscalation(false);
 
-    // Capturar lead si no está capturado
     if (!leadData.captured) {
       setShowLeadForm(true);
     }
@@ -335,7 +386,7 @@ export default function ChatBot({ isOpen = false, onClose }: ChatBotProps) {
   const handleClose = () => {
     setOpen(false);
     onClose?.();
-    logAnalytics('chat_closed', { conversationCount });
+    logAnalytics('chat_closed', { conversationCount, segment: userSegment });
   };
 
   return (
@@ -371,6 +422,23 @@ export default function ChatBot({ isOpen = false, onClose }: ChatBotProps) {
               <X size={20} />
             </button>
           </div>
+
+          {/* Selección de Segmento */}
+          {showSegmentSelection && (
+            <div className="px-4 py-4 bg-blue-50 border-b border-blue-200">
+              <div className="grid grid-cols-2 gap-2">
+                {(['startup', 'enterprise', 'agency', 'freelancer'] as UserSegment[]).map((seg) => (
+                  <button
+                    key={seg}
+                    onClick={() => handleSegmentSelection(seg)}
+                    className="bg-white border border-blue-300 hover:bg-blue-100 text-blue-700 px-3 py-2 rounded text-xs font-medium transition"
+                  >
+                    {seg.charAt(0).toUpperCase() + seg.slice(1)}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Mensajes */}
           <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50">
@@ -483,7 +551,7 @@ export default function ChatBot({ isOpen = false, onClose }: ChatBotProps) {
           )}
 
           {/* Preguntas rápidas */}
-          {messages.length <= 1 && !isLoading && !showLeadForm && (
+          {messages.length <= 2 && !isLoading && !showLeadForm && !showSegmentSelection && (
             <div className="px-4 py-3 bg-white border-t border-slate-200">
               <p className="text-xs text-slate-600 mb-2 font-medium">Preguntas frecuentes:</p>
               <div className="grid grid-cols-2 gap-2">
